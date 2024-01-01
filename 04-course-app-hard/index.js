@@ -9,7 +9,8 @@ const { v4: uuidv4 } = require('uuid');
 dotenv.config();
 // var MongoClient = mongodb.MongoClient;
 var url = "mongodb://localhost:27017/coursesApp";
-const jwtSecretKey = process.env.JWT_SECRET_KEY;
+const jwtSecretKeyAdmin = process.env.JWT_SECRET_KEY_ADMIN;
+const jwtSecretKeyUser = process.env.JWT_SECRET_KEY_USER
 
 
 
@@ -40,6 +41,16 @@ const adminCourse = mongoose.Schema({
 })
 const adminCourseModel = mongoose.model("AdminCourses", adminCourse);
 
+// User Schema and model
+
+const userSchema = mongoose.Schema({
+  username : String,
+  password: String,
+  purchasedCourses : [{type : mongoose.Schema.Types.ObjectId, ref: 'AdminCourses'}]
+});
+const userModel = mongoose.model("Users", userSchema);
+
+
 /*
   Middleware to verify jwt tokens
 */
@@ -47,16 +58,30 @@ const httpLinkPattern = /^(http:\/\/www\.|https:\/\/www\.|http:\/\/|https:\/\/)[
 
 const middleware = {
 
-  authenticateToken : (req, res, next) => {
+  authenticateAdminToken : (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     if(token == null){
       return res.status(401)
     }
-    jwt.verify(token, jwtSecretKey, (err, user) => {
+    jwt.verify(token, jwtSecretKeyAdmin, (err, user) => {
       if(err){
         return res.status(403).send("Token is not Valid or has already expired!!")
       }
+      next();
+    })
+  },
+  authenticateUserToken : (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if(token == null){
+      return res.status(401)
+    }
+    jwt.verify(token, jwtSecretKeyUser, (err, user) => {
+      if(err){
+        return res.status(403).send("Token is not Valid or has already expired!!")
+      }
+      req.user = user
       next();
     })
   },
@@ -106,7 +131,7 @@ app.post('/admin/signup', async (req, res) => {
   });
   try{
     await am.save();
-    // const jwtToken = jwt.sign(userCreated, jwtSecretKey, {expiresIn: "2m"})
+    // const jwtToken = jwt.sign(userCreated, jwtSecretKeyAdmin, {expiresIn: "2m"})
     res.status(200).send(`User Created Successfully!!`);
   }catch(error){
     console.error("Error saving user:", error);
@@ -128,12 +153,12 @@ app.post('/admin/login', async (req, res) => {
       user : username,
       pwd : password
     };
-    const jwtToken = jwt.sign(userLoggedIn, jwtSecretKey, {expiresIn : "1h"});
+    const jwtToken = jwt.sign(userLoggedIn, jwtSecretKeyAdmin, {expiresIn : "1h"});
     return res.status(200).send(jwtToken);
   }
 });
 
-app.post('/admin/courses', [middleware.authenticateToken, middleware.verifyCourseDetails], async (req, res) => {
+app.post('/admin/courses', [middleware.authenticateAdminToken, middleware.verifyCourseDetails], async (req, res) => {
 
   const courseTitle = req.body.title;
   const courseDescription = req.body.description;
@@ -162,7 +187,7 @@ app.post('/admin/courses', [middleware.authenticateToken, middleware.verifyCours
   }
 });
 
-app.put('/admin/courses/:courseId', [middleware.authenticateToken, middleware.verifyCourseDetails], async (req, res) => {
+app.put('/admin/courses/:courseId', [middleware.authenticateAdminToken, middleware.verifyCourseDetails], async (req, res) => {
   const courseId = req.params.courseId;
   const courseTitle = req.body.title;
   const courseDescription = req.body.description;
@@ -199,10 +224,10 @@ app.put('/admin/courses/:courseId', [middleware.authenticateToken, middleware.ve
 
 });
 
-app.get('/admin/courses', middleware.authenticateToken, async  (req, res) => {
+app.get('/admin/courses', middleware.authenticateAdminToken, async  (req, res) => {
 
   try{
-    const allCourses = await adminCourseModel.find();
+    const allCourses = await adminCourseModel.find({});
     const output = {
     courses : allCourses};
     res.status(200).send(output);
@@ -215,24 +240,94 @@ app.get('/admin/courses', middleware.authenticateToken, async  (req, res) => {
 });
 
 // User routes
-app.post('/users/signup', (req, res) => {
-  // logic to sign up user
+app.post('/users/signup', async (req, res) => {
+  const userName = req.body.username;
+  const pwd = req.body.password;
+  const userCreated = {
+    username : userName,
+    password : pwd
+  }
+
+  if(userName === " " || userName === undefined || (await userModel.findOne({username: userName}))) {
+    res.status(403).send("User already exists!!, try a different username.");
+    return;
+  }
+  const um = new userModel(userCreated);
+  try{
+    await um.save();
+    res.status(200).send(`User Created Successfully!!`);
+  }catch(error){
+    console.error("Error saving user:", error);
+    res.status(500).send("Internal Server Error");
+  }
 });
 
-app.post('/users/login', (req, res) => {
-  // logic to log in user
+app.post('/users/login', async (req, res) => {
+  const username = req.headers.username;
+  const password = req.headers.password;
+
+  if(username == null || username.trim() == "" || username === undefined || password == null || password.trim() == "" || password == undefined){
+    return res.status(401).send("Invalid Credentials");
+  } else if (!(await userModel.findOne({username: username, password: password}))){
+    return res.status(401).send("User does not exists");
+  }else{
+    const userLoggedIn = {
+      user : username,
+      pwd : password
+    };
+    const jwtToken = jwt.sign(userLoggedIn, jwtSecretKeyUser, {expiresIn : "1h"});
+    return res.status(200).send(jwtToken);
+  }
 });
 
-app.get('/users/courses', (req, res) => {
-  // logic to list all courses
+app.get('/users/courses', middleware.authenticateUserToken , async (req, res) => {
+  try{
+    const courseList = await adminCourseModel.find({published:true});
+    const output = {courses : courseList}
+    res.status(200).send(output);
+  }catch(err){
+    console.log(err);
+    res.status(500).send("Could not fetch courses")
+  }
 });
 
-app.post('/users/courses/:courseId', (req, res) => {
-  // logic to purchase a course
+app.post('/users/courses/:courseId', middleware.authenticateUserToken,  async (req, res) => {
+  const courseId = req.params.courseId;
+  try{
+    const user = await userModel.findOne({username : req.user.user});
+    const course = await adminCourseModel.findById(courseId);
+    if(course){
+      user.purchasedCourses.push(course);
+      await user.save();
+      res.status(200).json({ message: 'Course purchased successfully' });
+    }else{
+      res.status(404).send("Course Not found!!");
+    }
+  }catch(err){
+    console.log(err);
+    res.status(500).send("Some error occurred while purchasing the course");
+  }
+  
 });
 
-app.get('/users/purchasedCourses', (req, res) => {
-  // logic to view purchased courses
+app.get('/users/purchasedCourses', middleware.authenticateUserToken, async (req, res) => {
+  const username = req.user.user;
+  try {
+    const user = await userModel.findOne({username : username}).populate('purchasedCourses');
+    if(user.purchasedCourses){
+      res.status(200).json({
+        purchasedCourses: user.purchasedCourses
+      })
+    }else{
+      res.status(200).json({
+        purchasedCourses: []
+      })
+    }
+  }catch(err){
+    console.log(err);
+    res.send(500).send("Some error occurred while fetching purchased courses")
+  }
+  
 });
 
 app.listen(3000, () => {

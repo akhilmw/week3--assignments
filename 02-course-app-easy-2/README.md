@@ -52,7 +52,7 @@ We will be covering this in the extra class next week but would be good for you 
    User Routes:
 
 ### User routes
- - POST /users/signup
+ - POST /users/signup  -> Done
    Description: Creates a new user account.
    Input: { username: 'user', password: 'pass' }
    Output: { message: 'User created successfully', token: 'jwt_token_here' }
